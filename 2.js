@@ -139,8 +139,8 @@ function httpHandler(req, pathname) {
     const reqInit = {
         method: req.method,
         headers: reqHdrNew,
-        redirect: 'manual',
-        body: req.body
+        redirect: 'follow',
+        // body: req.body
     }
     return proxy(urlObj, reqInit)
 }
@@ -157,7 +157,7 @@ async function proxy(urlObj, reqInit) {
     const resHdrNew = new Headers(resHdrOld)
 
     const status = res.status
-
+  
     if (resHdrNew.has('location')) {
         let _location = resHdrNew.get('location')
         if (checkUrl(_location))
@@ -173,9 +173,22 @@ async function proxy(urlObj, reqInit) {
     resHdrNew.delete('content-security-policy')
     resHdrNew.delete('content-security-policy-report-only')
     resHdrNew.delete('clear-site-data')
-
+  
+  if (res.headers.get("Content-Encoding") === "br") {
+    const buffer = await res.arrayBuffer();
+    const uncompressed = await brotli.decompress(buffer);
+    const headers = new Headers(resHdrNew);
+    headers.set("Content-Length", uncompressed.byteLength.toString());
+    return new Response(uncompressed, {
+      headers: headers,
+      status,
+      statusText: res.statusText,
+    });
+  } else {
     return new Response(res.body, {
-        status,
-        headers: resHdrNew,
-    })
+      status,
+      headers: resHdrNew,
+  })
+  }
+
 }
