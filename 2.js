@@ -1,196 +1,181 @@
-addEventListener('fetch', event => {
-    event.respondWith(handleRequest(event.request));
-  });
-  
-  var url404 = "https://raw.githubusercontent.com/Cheshire-Nya/easy-random-image-api/main/html-template/404.html";
-  //404模板地址
-  
-  var imgHost = "https://raw.githubusercontent.com/Cheshire-Nya/easy-random-image-api/main";
-  //图片地址前部不会发生改变的部分
-  //用github作为图库应按照此格式"https://raw.githubusercontent.com/<github用户名>/<仓库名>/<分支名>"
-  
-  var defaultPath = '/'; //现在是仓库根目录
-  //访问的url路径为`/api`或`/api/`时抽图的文件夹
-  
-  var redirectProxy = 2;
-  //type=302时返回的链接是否是经过代理的，0 不代理(返回github原链接)，1 worker代理，2 ghproxy代理
-  
-  var maxValues = {
-    '/': 2, //仓库根目录
-    '/%E7%A4%BA%E4%BE%8B%E5%9B%BE': 10, //示例图
-    //判断当前访问的url.pathname是否为`/示例图`（即`/%E7%A4%BA%E4%BE%8B%E5%9B%BE`，js内中文不编码无法正常使用）
-    //其他路径下同理，只需要这样相同格式多写一条键值对即可`'/<文件夹名>': <数值>,`
-    '/demoimg': 5, //demoimg
-    //英文路径正常使用
-  }
-  //存储键值对：仓库下图片文件夹名称及对应的图片数
-  
-  var ghproxyUrl = "https://ghproxy.com/";
-  var min = 1;
-  var max;
-  
-  async function handleRequest(request) {
-    let nowUrl = new URL(request.url);
-    let wholePath = nowUrl.pathname;
-    let urlSearch = nowUrl.search;
-    if (nowUrl.pathname === '/api' || nowUrl.pathname === '/api/') {
-      if (nowUrl.search) {
-        const imgPath = defaultPath;
-        return extractSearch(imgPath, urlSearch, request);
-  
-      } else {
-       return random(defaultPath);
-  
-      };
+'use strict'
+
+/**
+ * static files (404.html, sw.js, conf.js)
+ */
+const ASSET_URL = 'https://hunshcn.github.io/gh-proxy/'
+// 前缀，如果自定义路由为example.com/gh/*，将PREFIX改为 '/gh/'，注意，少一个杠都会错！
+const PREFIX = '/'
+// 分支文件使用jsDelivr镜像的开关，0为关闭，默认关闭
+const Config = {
+    jsdelivr: 0
+}
+
+const whiteList = [] // 白名单，路径里面有包含字符的才会通过，e.g. ['/username/']
+
+/** @type {RequestInit} */
+const PREFLIGHT_INIT = {
+    status: 204,
+    headers: new Headers({
+        'access-control-allow-origin': '*',
+        'access-control-allow-methods': 'GET,POST,PUT,PATCH,TRACE,DELETE,HEAD,OPTIONS',
+        'content-type': 'application/octet-stream',
+        'access-control-max-age': '1728000',
+    }),
+}
+
+
+const exp1 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:releases|archive)\/.*$/i
+const exp2 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:blob|raw)\/.*$/i
+const exp3 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:info|git-).*$/i
+const exp4 = /^(?:https?:\/\/)?raw\.(?:githubusercontent|github)\.com\/.+?\/.+?\/.+?\/.+$/i
+const exp5 = /^(?:https?:\/\/)?gist\.(?:githubusercontent|github)\.com\/.+?\/.+?\/.+$/i
+const exp6 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/tags.*$/i
+
+/**
+ * @param {any} body
+ * @param {number} status
+ * @param {Object<string, string>} headers
+ */
+function makeRes(body, status = 200, headers = {}) {
+    headers['access-control-allow-origin'] = '*'
+    return new Response(body, {status, headers})
+}
+
+
+/**
+ * @param {string} urlStr
+ */
+function newUrl(urlStr) {
+    try {
+        return new URL(urlStr)
+    } catch (err) {
+        return null
+    }
+}
+
+
+addEventListener('fetch', e => {
+    const ret = fetchHandler(e)
+        .catch(err => makeRes('cfworker error:\n' + err.stack, 502))
+    e.respondWith(ret)
+})
+
+
+function checkUrl(u) {
+    for (let i of [exp1, exp2, exp3, exp4, exp5, exp6]) {
+        if (u.search(i) === 0) {
+            return true
+        }
+    }
+    return false
+}
+
+/**
+ * @param {FetchEvent} e
+ */
+async function fetchHandler(e) {
+    const req = e.request
+    const urlStr = req.url
+    const urlObj = new URL(urlStr)
+    let path = urlObj.searchParams.get('q')
+    if (path) {
+        return Response.redirect('https://' + urlObj.host + PREFIX + path, 301)
+    }
+    // cfworker 会把路径中的 `//` 合并成 `/`
+    path = urlObj.href.substr(urlObj.origin.length + PREFIX.length).replace(/^https?:\/+/, 'https://')
+    if (path.search(exp1) === 0 || path.search(exp5) === 0 || path.search(exp6) === 0 || path.search(exp3) === 0 || path.search(exp4) === 0) {
+        return httpHandler(req, path)
+    } else if (path.search(exp2) === 0) {
+        if (Config.jsdelivr) {
+            const newUrl = path.replace('/blob/', '@').replace(/^(?:https?:\/\/)?github\.com/, 'https://cdn.jsdelivr.net/gh')
+            return Response.redirect(newUrl, 302)
+        } else {
+            path = path.replace('/blob/', '/raw/')
+            return httpHandler(req, path)
+        }
+    } else if (path.search(exp4) === 0) {
+        const newUrl = path.replace(/(?<=com\/.+?\/.+?)\/(.+?\/)/, '@$1').replace(/^(?:https?:\/\/)?raw\.(?:githubusercontent|github)\.com/, 'https://cdn.jsdelivr.net/gh')
+        return Response.redirect(newUrl, 302)
     } else {
-      return whetherDefault(wholePath, urlSearch, request);
-  
+        return fetch(ASSET_URL + path)
     }
-  }
-  
-  
-  function whetherDefault(wholePath, urlSearch, request) {
-    let imgName = null;
-    const regex = /^\/api\/(\d+)\.jpg$/;
-    const match = wholePath.match(regex);
-    if (match) {
-      imgName = match[1];
-      let imgPath = defaultPath;
-      return prescriptive(defaultPath, imgName);
-    } else {
-      return handle1(wholePath, urlSearch, request);
+}
+
+
+/**
+ * @param {Request} req
+ * @param {string} pathname
+ */
+function httpHandler(req, pathname) {
+    const reqHdrRaw = req.headers
+
+    // preflight
+    if (req.method === 'OPTIONS' &&
+        reqHdrRaw.has('access-control-request-headers')
+    ) {
+        return new Response(null, PREFLIGHT_INIT)
     }
-  }
-  
-  
-  function handle1(wholePath, urlSearch, request) {
-    let imgPath = null;
-    if (urlSearch) {
-      const regex = /^\/api\/(.+[^\/])\/?$/;
-      const match = wholePath.match(regex);
-      if (match) {
-        imgPath = `/${match[1]}`;
-        return extractSearch(imgPath, urlSearch, request);
-      } else {
-        return error();
-      };
-  
-    } else {
-      return handle2(wholePath);
-    };
-  }
-  
-  function extractSearch(imgPath, urlSearch, request) {
-    const params = new URLSearchParams(urlSearch);
-    if (params.has("id") && params.get("type") !== "302") {
-      const imgName = parseInt(params.get("id"));
-      return prescriptive(imgPath, imgName);
-    
-    } else if (params.get("type") === "302") {
-      
-      return redirect(imgPath, request);
+
+    const reqHdrNew = new Headers(reqHdrRaw)
+
+    let urlStr = pathname
+    let flag = !Boolean(whiteList.length)
+    for (let i of whiteList) {
+        if (urlStr.includes(i)) {
+            flag = true
+            break
+        }
     }
-  }
-  
-  function handle2(wholePath) {
-    let imgPath = null;
-    let imgName = null;
-    const regex1 = /^\/api\/(.+[^\/])\/(\d+)\.jpg$/;
-    const match1 = wholePath.match(regex1);
-  
-    if (match1) { 
-      imgPath = `/${match1[1]}`;
-      imgName = match1[2];
-      return prescriptive(imgPath, imgName);
-    } else {
-      const regex2 = /^\/api\/(.+[^\/])\/?$/;
-      const match2 = wholePath.match(regex2);
-  
-      if (match2) {
-        imgPath = `/${match2[1]}`;
-        return random(imgPath);
-      } else {
-        return error();
-      }
+    if (!flag) {
+        return new Response("blocked", {status: 403})
     }
-  }
-  
-  
-  function random(imgPath) {
-    if (!maxValues.hasOwnProperty(imgPath)) { 
-    return error();
+    if (urlStr.startsWith('github')) {
+        urlStr = 'https://' + urlStr
     }
-    let max = maxValues[imgPath];
-    let imgUrl = imgHost + imgPath + "/" + Math.floor(Math.random()*(max-min+1)+min) + ".jpg";
-    let getimg = new Request(imgUrl);
-    return fetch(getimg, {
-      headers: {
-        'cache-control': 'max-age=0, s-maxage=0',
-        'content-type': 'image/jpeg',
-        'Cloudflare-CDN-Cache-Control': 'max-age=0',
-        'CDN-Cache-Control': 'max-age=0'
-      },
-    });  
-  }
-  
-  function prescriptive(imgPath, imgName) {
-    let imgUrl = imgHost + imgPath + "/" + imgName + ".jpg";
-    if (imgPath in maxValues) {
-      if (imgName >= 1 && imgName <= maxValues[imgPath]) {
-        return fetch(new Request(imgUrl), {
-          headers: {
-          'cache-control': 'max-age=0, s-maxage=0',
-          'content-type': 'image/jpeg',
-          'Cloudflare-CDN-Cache-Control': 'max-age=0',
-          'CDN-Cache-Control': 'max-age=0'
-          },
-        });
-      } else return error();
-    } else return error();
-  }
-  
-  function redirect(imgPath, request) {
-    let max = maxValues[imgPath];
-    if (redirectProxy === 0) {
-      const redirectUrl = imgHost + imgPath + "/" + Math.floor(Math.random()*(max-min+1)+min) + ".jpg";
-      return do302(redirectUrl);
-  
-    } else if (redirectProxy === 1) {
-      const nowUrl = new URL(request.url);
-      const myHost = nowUrl.hostname;
-      if (imgPath === defaultPath) {
-        const redirectUrl = "https://" + myHost + "/api/" + Math.floor(Math.random()*(max-min+1)+min) + ".jpg";
-        return do302(redirectUrl);
-  
-      } else if (maxValues.hasOwnProperty(imgPath) && imgPath !== defaultPath) {
-        const redirectUrl = "https://" + myHost + "/api" + imgPath + "/" + Math.floor(Math.random()*(max-min+1)+min) + ".jpg";
-        return do302(redirectUrl);
-  
-      } else return error();
-    
-    } else if (redirectProxy === 2) {
-      const redirectUrl = ghproxyUrl + imgHost + imgPath + "/" + Math.floor(Math.random()*(max-min+1)+min) + ".jpg";
-      return do302(redirectUrl);
-  
-    } else return error();
-    
-  }
-  
-  function do302(redirectUrl) {
-    return new Response("", {
-      status: 302,
-      headers: {
-        Location: redirectUrl
-      }
-    });
-  }
-  
-  async function error() {
-    let response = await fetch(url404);
-    response = new Response(response.body, {
-        status: 404,
-        statusText: 'Not Found',
-        headers: { 'Content-Type': 'text/html' }
-    });
-    return response
-  }
+    const urlObj = newUrl(urlStr)
+
+    /** @type {RequestInit} */
+    const reqInit = {
+        method: req.method,
+        headers: reqHdrNew,
+        redirect: 'manual',
+        body: req.body
+    }
+    return proxy(urlObj, reqInit)
+}
+
+
+/**
+ *
+ * @param {URL} urlObj
+ * @param {RequestInit} reqInit
+ */
+async function proxy(urlObj, reqInit) {
+    const res = await fetch(urlObj.href, reqInit)
+    const resHdrOld = res.headers
+    const resHdrNew = new Headers(resHdrOld)
+
+    const status = res.status
+
+    if (resHdrNew.has('location')) {
+        let _location = resHdrNew.get('location')
+        if (checkUrl(_location))
+            resHdrNew.set('location', PREFIX + _location)
+        else {
+            reqInit.redirect = 'follow'
+            return proxy(newUrl(_location), reqInit)
+        }
+    }
+    resHdrNew.set('access-control-expose-headers', '*')
+    resHdrNew.set('access-control-allow-origin', '*')
+
+    resHdrNew.delete('content-security-policy')
+    resHdrNew.delete('content-security-policy-report-only')
+    resHdrNew.delete('clear-site-data')
+
+    return new Response(res.body, {
+        status,
+        headers: resHdrNew,
+    })
+}
